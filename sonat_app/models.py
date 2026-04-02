@@ -17,7 +17,7 @@ class UserConnection(models.Model):
         SPOTIFY = 'spotify', 'Spotify'
         TELEGRAM = 'telegram', 'Telegram'
 
-    user = models.ForeignKey(User, on_delete=models.CASCADE, realted_name='connections')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='connections')
     provider = models.CharField(max_length=20, choices=Provider.choices)
     external_user_id = models.CharField(max_length=255, blank=True, null=True)
     refresh_token = models.TextField(blank=True, null=True)
