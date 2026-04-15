@@ -1,9 +1,18 @@
+from contextlib import nullcontext
+from datetime import timedelta
+
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.urls import reverse
+from django.utils import timezone
+
+def telegram_code_expires():
+    return timezone.now() + timedelta(minutes=2)
+
 
 class User(AbstractUser):
     email = models.EmailField(unique=True)
+    telegram_id = models.CharField(max_length=100, unique=True, blank=True, null=True)
 
 class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
@@ -11,22 +20,6 @@ class UserProfile(models.Model):
     last_name = models.CharField(max_length=50, blank=True)
     birth_day = models.DateField(null=True,blank=True)
     description = models.TextField(max_length=150, blank=True)
-
-class UserConnection(models.Model):
-    class Provider(models.TextChoices):
-        SPOTIFY = 'spotify', 'Spotify'
-        TELEGRAM = 'telegram', 'Telegram'
-
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='connections')
-    provider = models.CharField(max_length=20, choices=Provider.choices)
-    external_user_id = models.CharField(max_length=255, blank=True, null=True)
-    refresh_token = models.TextField(blank=True, null=True)
-    access_token = models.TextField(blank=True, null=True)
-    expires_at = models.DateTimeField(blank=True, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        unique_together = ('user', 'provider')
 
 class Track(models.Model):
     class SourceType(models.TextChoices):
@@ -53,14 +46,18 @@ class UserLibraryItem(models.Model):
     class Meta:
         unique_together = ('user', 'track')
 
-class UploadedMedia(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='uploaded_file')
-    file = models.FileField(upload_to='uploads/%Y/%m/%d/')
-    original_filename = models.CharField(max_length=255, blank=True)
-    mime_type = models.CharField(max_length=100, blank=True)
-    size = models.BigIntegerField(null=True, blank=True)
+class TelegramUpload(models.Model):
+    telegram_id = models.CharField(max_length=100,blank=True)
+    audio_file = models.FileField(upload_to="audio_files/", blank=True, null=True)
+    cover_file = models.FileField(upload_to="cover_files/", blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+class TelegramConnection(models.Model):
 
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='telegram_connection')
+    code = models.CharField(max_length=15,blank=True)
+    expired_to = models.DateTimeField(default=telegram_code_expires)
+    valid = models.BooleanField(default=True, blank=True)
 
-
+    class Meta:
+        unique_together = ('user', 'code')

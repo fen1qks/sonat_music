@@ -89,3 +89,4 @@ local_settings.py
 db.sqlite3
 
 sonat_app/spotifyToken.py
+sonat_app/telegram_bot

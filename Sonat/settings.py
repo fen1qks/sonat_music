@@ -40,6 +40,11 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
 ]
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+MEDIA_ROOT = BASE_DIR / "sonat_app" / "telegram_bot" / "data"
+MEDIA_URL = "/media/"
+
 
 # Application definition
 

@@ -1,11 +1,15 @@
 import datetime
 import json
+import secrets
+import uuid
 
 from django.contrib.auth import authenticate, login, logout
+from django.core.files.uploadedfile import UploadedFile
 from django.http import JsonResponse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
-from sonat_app.models import User, UserConnection, UserProfile, Track, UserLibraryItem
+from sonat_app.models import User, UserProfile, Track, UserLibraryItem, TelegramConnection, TelegramUpload
 from sonat_app.searchTrack import search_youtube, search_spotify
 
 
@@ -80,22 +84,11 @@ def api_register(request):
         'user_id': user.id,
     })
 
-
 def api_data_user(request):
     if not request.user.is_authenticated:
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
     user = request.user
-
-    spotify_connect = UserConnection.objects.filter(
-        user = request.user,
-        provider__iexact="SPOTIFY" or "spotify"
-    ).exists()
-
-    telegram_connect = UserConnection.objects.filter(
-        user=request.user,
-        provider__iexact="TELEGRAM" or "telegram"
-    ).exists()
 
     return JsonResponse({
         "username": user.username,
@@ -103,8 +96,6 @@ def api_data_user(request):
         "last_name": user.profile.last_name,
         "description": user.profile.description,
         "birth_day": user.profile.birth_day.isoformat() if user.profile.birth_day else "",
-        "spotify_link": spotify_connect,
-        "telegram_link": telegram_connect,
     })
 
 def api_edit_profile(request):
@@ -148,7 +139,6 @@ def api_edit_profile(request):
     return JsonResponse({
         "message": "User data updated successfully",
     })
-
 
 def api_logout(request):
     if request.method != "POST":
@@ -221,6 +211,32 @@ def api_add_library(request):
 
     return JsonResponse({"message": "Track successfully add to library"})
 
+def api_delete_from_library(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST allowed"}, status=405)
+
+    if not request.user.is_authenticated:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    user = request.user
+
+    source_id = data.get("sourceId")
+    source_type = data.get("sourceType")
+
+    if not source_id or not source_type:
+        return JsonResponse({"error": "source_id and source_type required"}, status=400)
+
+    find_track = Track.objects.filter(source_id=source_id, source_type=source_type).first()
+    UserLibraryItem.objects.filter(track_id=find_track.id, user_id = user.id).delete()
+
+    return JsonResponse({"message": "Track successfully deleted"}, status=200)
+
+
 def api_get_library(request):
     if request.method != "GET":
         return JsonResponse({"error": "Only GET allowed"}, status=405)
@@ -290,6 +306,172 @@ def api_filter_library(request):
         })
 
     return JsonResponse({"tracks": tracks})
+
+
+def api_telegram_code_create(request):
+    def random_code():
+        chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        code = ""
+
+        for i in range(8):
+            if i == 4:
+                code += "-"
+            code += secrets.choice(chars)
+
+        return code
+
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST allowed"}, status=405)
+
+    if not request.user.is_authenticated:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    user = request.user
+
+    telegram_connect = bool(user.telegram_id)
+
+    if telegram_connect:
+        return JsonResponse({"error":"Telegram already connected for this account"},status=400)
+
+    TelegramConnection.objects.filter(
+        user=user,
+        valid=True,
+    ).update(valid=False)
+
+    code = random_code()
+
+    TelegramConnection.objects.create(
+        user=user,
+        code=code,
+    )
+
+    return JsonResponse({"code": code},status=201)
+
+@csrf_exempt
+def api_connecting_telegram(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    code = data.get("code")
+    telegram_id = data.get("telegram_id")
+
+    find_code_in_table = TelegramConnection.objects.filter(
+        code=code,
+        valid=True,
+        expired_to__gt=timezone.now(),
+    ).first()
+
+    if not find_code_in_table:
+        return JsonResponse({"error":"This code not valid"})
+
+    telegram_already_connected = User.objects.filter(id=find_code_in_table.user_id, telegram_id__isnull=False).exists()
+
+    if telegram_already_connected:
+        return JsonResponse({"error":"This account already connected to telegram"},status=400)
+
+    User.objects.filter(id=find_code_in_table.user_id).update(telegram_id=telegram_id)
+
+    TelegramConnection.objects.filter(user_id=find_code_in_table.user_id, code=code).update(valid=False)
+
+    return JsonResponse({"success":"Successful connected"},status=200)
+
+@csrf_exempt
+def api_unconnected_telegram(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    telegram_id = data.get("telegram_id")
+
+    unconnected = User.objects.filter(telegram_id=telegram_id).update(telegram_id=None)
+
+    if not unconnected:
+        return JsonResponse({"error":"Error unlinked account"}, status=400)
+
+    return JsonResponse({"success":"Account successful unlinked"},status=200)
+
+@csrf_exempt
+def api_status_connection_telegram(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    telegram_id = data.get("telegram_id")
+
+    if User.objects.filter(telegram_id=telegram_id):
+        return JsonResponse({"connected": True}, status=200)
+
+    return JsonResponse({"connected": False}, status=200)
+
+@csrf_exempt
+def api_upload_track(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST allowed"}, status=405)
+
+    telegram_id = request.POST.get("telegram_id")
+    title = request.POST.get("title")
+    author = request.POST.get("author")
+
+    cover = request.FILES.get("cover")
+    audio = request.FILES.get("audio")
+
+    if not telegram_id or not title or not author or not cover or not audio:
+        return JsonResponse({"error": "Missing required fields"}, status=400)
+
+    user = User.objects.filter(telegram_id=telegram_id).first()
+    if not user:
+        return JsonResponse({"error": "Telegram account not linked"}, status=400)
+
+    upload_track = TelegramUpload.objects.create(
+        telegram_id=telegram_id,
+        cover_file=cover,
+        audio_file=audio
+    )
+
+    track_create = Track.objects.create(
+        source_type="telegram",
+        source_id=uuid.uuid4().hex,
+        title=title,
+        artist=author,
+        cover_url=request.build_absolute_uri(upload_track.cover_file.url),
+        external_url=request.build_absolute_uri(upload_track.audio_file.url)
+    )
+
+    UserLibraryItem.objects.create(
+        added_at=timezone.now(),
+        track_id=track_create.id,
+        user_id=user.id
+    )
+
+    return JsonResponse({"ok": True}, status=200)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
